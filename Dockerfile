@@ -6,7 +6,8 @@ RUN apk add --no-cache \
     openssl \
     jq \
     coreutils \
-    ca-certificates
+    ca-certificates \
+    curl
 
 # Create app directory
 WORKDIR /app
