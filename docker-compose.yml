@@ -1,0 +1,15 @@
+services:
+  ssl-checker:
+    build: .
+    container_name: ssl-checker
+    volumes:
+      # Mount the current directory to /app/data in the container
+      - .:/app/data:ro
+    # Override the default command to use the sample file
+    command: ["/app/data/sample_hostnames.json"]
+    # Add environment variables for customization
+    environment:
+      - TZ=UTC
+    # Keep container running for interactive use
+    stdin_open: true
+    tty: true

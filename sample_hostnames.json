@@ -1,0 +1,48 @@
+{
+  "teams_url": "https://teams.microsoft.com/l/channel/19%3a7c8b4c8b4c8b4c8b4c8b4c8b4c8b4c8b%40thread.tacv2/General?groupId=12345678-1234-1234-1234-123456789012&tenantId=87654321-4321-4321-4321-210987654321",
+  "owner": "IT Security Team",
+  "hostnames": [
+    {
+      "hostname": "google.com",
+      "description": "Google main site",
+      "category": "search",
+      "priority": "high",
+      "environment": "production"
+    },
+    {
+      "hostname": "github.com",
+      "description": "GitHub",
+      "category": "development",
+      "priority": "medium",
+      "environment": "production"
+    },
+    {
+      "hostname": "stackoverflow.com",
+      "description": "Stack Overflow",
+      "category": "development",
+      "priority": "low",
+      "environment": "production"
+    },
+    {
+      "hostname": "example.com",
+      "description": "Example domain",
+      "category": "test",
+      "priority": "low",
+      "environment": "staging"
+    },
+    {
+      "hostname": "expired.badssl.com",
+      "description": "Test expired certificate",
+      "category": "test",
+      "priority": "high",
+      "environment": "test"
+    },
+    {
+      "hostname": "expiring.badssl.com",
+      "description": "Test expiring certificate",
+      "category": "test",
+      "priority": "high",
+      "environment": "test"
+    }
+  ]
+}
