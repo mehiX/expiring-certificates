@@ -5,12 +5,21 @@
 
 set -eu
 
-# Colors for output
-RED='\033[0;31m'
-GREEN='\033[0;32m'
-YELLOW='\033[1;33m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+if [ -z "${CI_COMMIT_BRANCH}" ]; then
+    # Running in a pipeline so no colors
+    RED=''
+    GREEN=''
+    YELLOW=''
+    BLUE=''
+    NC=''
+else
+    # Colors for output
+    RED='\033[0;31m'
+    GREEN='\033[0;32m'
+    YELLOW='\033[1;33m'
+    BLUE='\033[0;34m'
+    NC='\033[0m' # No Color
+fi
 
 # Function to print usage
 usage() {
@@ -31,6 +40,123 @@ usage() {
 # Function to check if command exists
 command_exists() {
     command -v "$1" >/dev/null 2>&1
+}
+
+# Function to send Microsoft Teams notification
+send_teams_notification() {
+    local teams_url="$1"
+    local expiring_certs="$2"
+    local owner="$3"
+    
+    if [ -z "$teams_url" ] || [ "$teams_url" = "null" ] || [ "$teams_url" = "" ]; then
+        echo "${YELLOW}Warning: No Teams URL configured, skipping notification${NC}"
+        return 0
+    fi
+    
+    # Check if curl is available
+    if ! command_exists curl; then
+        echo "${RED}Error: curl command not found. Please install curl to send Teams notifications.${NC}"
+        return 1
+    fi
+    
+    # Create JSON payload for Teams
+    local json_payload
+    json_payload=$(cat <<EOF
+{
+    "@type": "MessageCard",
+    "@context": "http://schema.org/extensions",
+    "themeColor": "FF6B6B",
+    "summary": "SSL Certificate Expiration Alert",
+    "sections": [{
+        "activityTitle": "🚨 SSL Certificate Expiration Alert",
+        "activitySubtitle": "The following certificates are expiring in less than 30 days",
+        "facts": [
+            {
+                "name": "Alert Time",
+                "value": "$(date)"
+            },
+            {
+                "name": "Owner",
+                "value": "${owner:-Not specified}"
+            },
+            {
+                "name": "Total Certificates",
+                "value": "$(echo "$expiring_certs" | wc -l)"
+            }
+        ],
+        "text": "**Expiring Certificates:**\n\n$expiring_certs",
+        "markdown": true
+    }]
+}
+EOF
+)
+    
+    # Send notification to Teams
+    echo "${BLUE}Sending Teams notification...${NC}"
+    if curl -s -X POST -H "Content-Type: application/json" -d "$json_payload" "$teams_url" >/dev/null 2>&1; then
+        echo "${GREEN}✓ Teams notification sent successfully${NC}"
+    else
+        echo "${RED}✗ Failed to send Teams notification${NC}"
+        return 1
+    fi
+}
+
+# Function to get certificate details for Teams notification
+get_certificate_details() {
+    local hostname="$1"
+    local port="${2:-443}"
+    local timeout="${3:-10}"
+    local description="$4"
+    local category="$5"
+    local priority="$6"
+    local environment="$7"
+    
+    # Get certificate information using openssl
+    local cert_info
+    if command_exists gtimeout; then
+        cert_info=$(gtimeout "$timeout" openssl s_client -connect "$hostname:$port" -servername "$hostname" < /dev/null 2>/dev/null | openssl x509 -noout -dates 2>/dev/null)
+    else
+        cert_info=$(openssl s_client -connect "$hostname:$port" -servername "$hostname" -verify_return_error < /dev/null 2>/dev/null | openssl x509 -noout -dates 2>/dev/null)
+    fi
+    
+    if [ -n "$cert_info" ]; then
+        # Extract notAfter date
+        local not_after
+        not_after=$(echo "$cert_info" | grep "notAfter" | cut -d= -f2)
+        
+        if [ -n "$not_after" ]; then
+            # Convert to epoch time for calculation
+            local expiry_epoch
+            expiry_epoch=$(date -d "$not_after" +%s 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$not_after" +%s 2>/dev/null)
+            
+            if [ -n "$expiry_epoch" ]; then
+                current_epoch=$(date +%s)
+                days_left=$(expr \( $expiry_epoch - $current_epoch \) / 86400)
+                formatted_date=$(date -d "$not_after" 2>/dev/null || date -j -f "%b %d %H:%M:%S %Y %Z" "$not_after" 2>/dev/null)
+                
+                # Return certificate details if expiring in less than 30 days
+                if [ $days_left -le 30 ]; then
+                    local cert_details="• **$hostname**"
+                    if [ -n "$description" ] && [ "$description" != "null" ]; then
+                        cert_details="$cert_details - $description"
+                    fi
+                    if [ $days_left -gt 0 ]; then
+                        cert_details="$cert_details\n  - ⚠️ Expires in $days_left days ($formatted_date)"
+                    else
+                        local days_expired=$(expr 0 - $days_left)
+                        cert_details="$cert_details\n  - ❌ EXPIRED $days_expired days ago ($formatted_date)"
+                    fi
+                    if [ -n "$priority" ] && [ "$priority" != "null" ]; then
+                        cert_details="$cert_details\n  - Priority: $priority"
+                    fi
+                    if [ -n "$environment" ] && [ "$environment" != "null" ]; then
+                        cert_details="$cert_details\n  - Environment: $environment"
+                    fi
+                    echo "$cert_details"
+                fi
+            fi
+        fi
+    fi
 }
 
 # Function to check SSL certificate expiration
@@ -131,14 +257,20 @@ check_ssl_expiration() {
                 if [ $days_left -gt 30 ]; then
                     echo "  ${GREEN}✓ Certificate expires: $formatted_date${NC}"
                     echo "  ${GREEN}  Days remaining: $days_left${NC}"
+                    # Return 0 for non-expiring certificates
+                    return 0
                 elif [ $days_left -gt 0 ]; then
                     echo "  ${YELLOW}⚠ Certificate expires: $formatted_date${NC}"
                     echo "  ${YELLOW}  Days remaining: $days_left (WARNING: Expires soon!)${NC}"
+                    # Return 1 for expiring certificates (less than 30 days)
+                    return 1
                 else
                     # Calculate days expired (positive number)
                     days_expired=$(expr 0 - $days_left)
                     echo "  ${RED}✗ Certificate expired: $formatted_date${NC}"
                     echo "  ${RED}  Days expired: $days_expired${NC}"
+                    # Return 1 for expired certificates
+                    return 1
                 fi
             else
                 echo "  ${RED}Error: Could not parse expiry date${NC}"
@@ -308,7 +440,11 @@ EOF
     local hostnames
     hostnames=$(extract_hostnames "$json_file")
     
-    count=0
+    # Variables to track expiring certificates
+    local expiring_certs=""
+    local has_expiring_certs=false
+    local count=0
+    
     while IFS= read -r hostname; do
         if [ -n "$hostname" ] && [ "$hostname" != "null" ]; then
             # Extract all data for this hostname
@@ -321,10 +457,34 @@ $hostname_data
 EOF
                 
                 # Call the check function with all parameters (including global data)
-                check_ssl_expiration "$hname" "$port" "$timeout" "$description" "$category" "$global_teams_url" "$global_owner" "$priority" "$environment"
+                if ! check_ssl_expiration "$hname" "$port" "$timeout" "$description" "$category" "$global_teams_url" "$global_owner" "$priority" "$environment"; then
+                    # Certificate is expiring or expired (return code 1)
+                    has_expiring_certs=true
+                    # Get certificate details for Teams notification
+                    cert_details=$(get_certificate_details "$hname" "$port" "$timeout" "$description" "$category" "$priority" "$environment")
+                    if [ -n "$cert_details" ]; then
+                        if [ -n "$expiring_certs" ]; then
+                            expiring_certs="$expiring_certs\n\n$cert_details"
+                        else
+                            expiring_certs="$cert_details"
+                        fi
+                    fi
+                fi
             else
                 # Fallback to basic check if data extraction fails
-                check_ssl_expiration "$hostname" "$port" "$timeout" "" "" "$global_teams_url" "$global_owner" "" ""
+                if ! check_ssl_expiration "$hostname" "$port" "$timeout" "" "" "$global_teams_url" "$global_owner" "" ""; then
+                    # Certificate is expiring or expired (return code 1)
+                    has_expiring_certs=true
+                    # Get certificate details for Teams notification
+                    cert_details=$(get_certificate_details "$hostname" "$port" "$timeout" "" "" "" "")
+                    if [ -n "$cert_details" ]; then
+                        if [ -n "$expiring_certs" ]; then
+                            expiring_certs="$expiring_certs\n\n$cert_details"
+                        else
+                            expiring_certs="$cert_details"
+                        fi
+                    fi
+                fi
             fi
             count=$(expr $count + 1)
         fi
@@ -333,6 +493,16 @@ $hostnames
 EOF
     
     echo "${BLUE}Checked $count hostname(s)${NC}"
+    
+    # Send Teams notification if there are expiring certificates
+    if [ "$has_expiring_certs" = true ] && [ -n "$expiring_certs" ]; then
+        echo ""
+        echo "${YELLOW}⚠️  Found certificates expiring in less than 30 days!${NC}"
+        send_teams_notification "$global_teams_url" "$expiring_certs" "$global_owner"
+    else
+        echo ""
+        echo "${GREEN}✓ All certificates are valid for more than 30 days${NC}"
+    fi
 }
 
 # Run main function with all arguments
